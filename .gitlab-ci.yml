@@ -1,0 +1,70 @@
+image: python:3.6-slim
+
+stages:
+  - test
+  - test_again
+  - build
+  - deploy to homolog
+
+variables:
+  BOT_LATEST_IMAGE: $CI_REGISTRY_IMAGE/bot:latest
+
+.cache: &cache
+  cache:
+    key: "$CI_BUILD_REF_NAME"
+    paths:
+      - venv/
+      - .pip
+
+.prepare_tests_dependencies: &tests_dependencies
+  before_script:
+    - pip -V
+    - python -V
+    - pip install virtualenv
+    - virtualenv venv
+    - source venv/bin/activate
+    - mkdir -p .pip
+    - pip --cache-dir=.pip install -r dev.requirements.txt
+    - echo $CI_PROJECT_DIR
+
+test style:
+  stage: test
+  <<: *cache
+  <<: *tests_dependencies
+  script:
+    - flake8 --exclude venv beatiful_python.py 
+
+test cache:
+  stage: test again
+  <<: *cache
+  script:
+    - flake8 --exclude venv beatiful_python.py
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker login -u "gitlab-ci-token" -p "$CI_JOB_TOKEN" $CI_REGISTRY
+
+    - docker build -f docker/bot.Dockerfile -t $BOT_STABLE_IMAGE .
+    - docker push $BOT_LATEST_IMAGE
+  environment: homolog
+  tags:
+    - docker
+
+deploy_to_homologation:
+  image: cdrx/rancher-gitlab-deploy
+  stage: deploy
+  services:
+    - docker:dind
+  script:
+    - upgrade --environment Production --stack TAIS --service bot --new-image $BOT_STABLE_IMAGE --no-finish-upgrade --debug
+    - upgrade --environment Production --stack TAIS --service actions --new-image $ACTIONS_STABLE_IMAGE --no-finish-upgrade --debug
+    - upgrade --environment Production --stack TAIS --service web --new-image $WEB_STABLE_IMAGE --no-finish-upgrade --debug
+  only:
+    - tags
+  environment: production
+  tags:
+    - docker
